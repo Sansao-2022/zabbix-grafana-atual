@@ -1,0 +1,162 @@
+version: "3"
+
+volumes:
+  db_data:
+    driver: local
+  grafana_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  
+
+services:
+  zabbix-server:
+    container_name: zabbix-server
+    hostname: zabbix-server
+    restart: unless-stopped
+    image: zabbix/zabbix-server-pgsql:alpine-${ZABBIX_VERSION}
+    ports:
+      - 10051:10051
+    environment:
+      - DB_SERVER_PORT=5432
+      - DB_SERVER_HOST=postgresql
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+      - ENABLE_TIMESCALEDB=true
+      - ZBX_STARTREPORTWRITERS=2
+      - ZBX_WEBSERVICEURL=http://zabbix-reports:10053/report
+    volumes:
+      - ./zabbix/usr/lib/zabbix/externalscripts:/usr/lib/zabbix/externalscripts:ro
+    depends_on:
+      - postgresql
+
+  zabbix-frontend:
+    container_name: zabbix-frontend
+    hostname: zabbix-frontend
+    restart: unless-stopped
+    image: zabbix/zabbix-web-apache-pgsql:alpine-${ZABBIX_VERSION}
+    ports:
+      -  80:8080
+      -  443:8443
+    environment:
+      - DB_SERVER_PORT=5432
+      - DB_SERVER_HOST=postgresql
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+      - PHP_TZ=America/Sao_Paulo
+      - ZBX_SERVER_NAME=zabbix-server
+      - ZBX_SERVER_HOST=zabbix-server
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - ./zabbix/etc/ssl/apache2:/etc/ssl/apache2:ro
+    depends_on:
+      - postgresql
+      - zabbix-server
+
+  postgresql:
+    container_name: postgresql
+    hostname: postgresql
+    restart: unless-stopped
+    image: timescale/timescaledb:2.8.1-pg14-oss
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+      - TS_TUNE_MEMORY=4GB
+      - TS_TUNE_NUM_CPUS=4
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "max_connections=1000"]
+
+  zabbix-agent:
+    container_name: zabbix-agent
+    hostname: zabbix-agent
+    restart: unless-stopped
+    image: zabbix/zabbix-agent:alpine-${ZABBIX_VERSION}
+    environment:
+      - ZBX_HOSTNAME=zabbix-agent
+      - ZBX_DEBUGLEVEL=4
+      - ZBX_ENABLEREMOTECOMMANDS=1
+      - ZBX_SERVER_HOST=zabbix-server
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - ./zabbix/etc/zabbix/zabbix_agentd.d:/etc/zabbix/zabbix_agentd.d:ro
+      - ./zabbix/frontend:/usr/share/zabbix/local/
+    depends_on:
+      - zabbix-server
+
+  zabbix-reports:
+    container_name: zabbix-relatorios
+    hostname: zabbix-reports
+    restart: unless-stopped
+    image: zabbix/zabbix-web-service:alpine-${ZABBIX_VERSION}
+    ports:
+      - 10053:10053
+    environment:
+      - ZBX_ALLOWEDIP=zabbix-server,zabbix-frontend
+      - ZBX_DEBUGLEVEL=4
+    cap_add:
+      - SYS_ADMIN
+    depends_on:
+      - zabbix-server
+      - zabbix-frontend
+
+  grafana:
+    container_name: grafana
+    hostname: grafana
+    restart: unless-stopped
+    image: grafana/grafana:${GRAFANA_VERSION}
+    ports:
+      - 3000:3000
+    environment:
+      - GF_INSTALL_PLUGINS=alexanderzobnin-zabbix-app ${GFN_ZBX_PLUGIN_VERSION}
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=alexanderzobnin-zabbix-datasource
+      - GF_LOG_LEVEL=debug
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=mailhog:1025
+      - GF_SMTP_USER=
+      - GF_SMTP_PASSWORD=
+      - GF_SMTP_CERT_FILE=
+      - GF_SMTP_KEY_FILE=
+      - GF_SMTP_EHLO_IDENTITY=
+      - GF_SMTP_SKIP_VERIFY=false
+      - GF_SMTP_FROM_ADDRESS=grafana@zabbixlab.local
+      - GF_SMTP_NAME=Grafana-ZabbixLab
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - zabbix-frontend
+  
+  pgadmin:
+    container_name: pgadmin
+    hostname: pgadmin
+    restart: unless-stopped
+    image: thajeztah/pgadmin4
+    ports:
+      - 5050:5050
+    volumes:
+      - pgadmin_data:/pgadmin
+    depends_on:
+      - postgresql
+
+  zabbix-provisioning:
+    container_name: provisionamento
+    hostname: zabbix-provisioning
+    image: python:3.8.5-alpine3.12
+    ports:
+      - 8484:80
+    
+    volumes:
+      - ./zabbix/provisioning.py:/tmp/provisioning.py:ro
+    command: ["python", "/tmp/provisioning.py"]
+    depends_on:
+      - zabbix-frontend
+
+  
